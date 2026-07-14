@@ -1000,6 +1000,309 @@ function classifySession(events) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 6. SIMULATOR DATA — catalog, metadata generators, scenario presets
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * A product in the demo catalog.
+ * @typedef {Object} CatalogProduct
+ * @property {string} id
+ * @property {string} name
+ * @property {string} category
+ * @property {number} price
+ */
+
+/** @type {CatalogProduct[]} */
+const CATALOG = [
+  { id: "SKU-1001", name: "Aurora Running Shoes", category: "Footwear", price: 129 },
+  { id: "SKU-1002", name: "Trailblazer Hiking Boots", category: "Footwear", price: 189 },
+  { id: "SKU-1003", name: "Velocity Windbreaker", category: "Outerwear", price: 98 },
+  { id: "SKU-1004", name: "Summit Puffer Jacket", category: "Outerwear", price: 240 },
+  { id: "SKU-1005", name: "Pulse Wireless Earbuds", category: "Electronics", price: 149 },
+  { id: "SKU-1006", name: "Nimbus Smart Watch", category: "Electronics", price: 299 },
+  { id: "SKU-1007", name: "Harbor Canvas Tote", category: "Accessories", price: 59 },
+  { id: "SKU-1008", name: "Atlas Leather Belt", category: "Accessories", price: 45 },
+];
+
+/** Distinct category names in the catalog. @type {string[]} */
+const CATALOG_CATEGORIES = [...new Set(CATALOG.map((p) => p.category))];
+
+/** Broad, exploratory queries (at most BROAD_QUERY_MAX_WORDS words). */
+const BROAD_SEARCH_QUERIES = ["sale", "new arrivals", "gifts", "best sellers", "jackets"];
+
+/** Specific, intent-loaded queries a decided shopper would type. */
+const SPECIFIC_SEARCH_QUERIES = [
+  "waterproof hiking boots size 10",
+  "noise cancelling earbuds under 150",
+  "mens leather belt 34 brown",
+  "lightweight packable rain jacket",
+];
+
+/** Queries a coupon hunter would type. */
+const COUPON_SEARCH_QUERIES = ["promo code", "discount code", "coupon 2026"];
+
+/** Discount depths a coupon can grant, in percent. */
+const COUPON_DISCOUNT_CHOICES = [10, 15, 20, 25];
+
+/** Dwell-time range (seconds) for a randomly generated product view. */
+const RANDOM_DWELL_MIN_S = 4;
+const RANDOM_DWELL_MAX_S = 90;
+
+/** Pick a uniformly random element. @template T @param {T[]} arr @returns {T} */
+const randomItem = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+/** Random integer in [min, max]. @param {number} min @param {number} max @returns {number} */
+const randomInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
+
+/**
+ * The product a cart/wishlist/price event should reference: the most recently
+ * viewed product when one exists (a shopper carts what they just looked at),
+ * otherwise a random catalog pick.
+ *
+ * @param {ShopperEvent[]} priorEvents
+ * @returns {CatalogProduct}
+ */
+function contextProduct(priorEvents) {
+  for (let i = priorEvents.length - 1; i >= 0; i -= 1) {
+    const e = priorEvents[i];
+    if (e.type === EVENT_TYPES.PRODUCT_VIEW && e.metadata?.productId) {
+      const match = CATALOG.find((p) => p.id === e.metadata.productId);
+      if (match) return match;
+    }
+  }
+  return randomItem(CATALOG);
+}
+
+/** Compact metadata for a product-scoped event. @param {CatalogProduct} p @returns {EventMetadata} */
+const productMetadata = (p) => ({ productId: p.id, productName: p.name, category: p.category, price: p.price });
+
+/**
+ * The discount that applies to a purchase happening now: the discountPercent
+ * of the most recent COUPON_APPLIED since the last completed purchase, or 0
+ * (full price) when none exists.
+ *
+ * @param {ShopperEvent[]} priorEvents
+ * @returns {number}
+ */
+function activeDiscountPercent(priorEvents) {
+  for (let i = priorEvents.length - 1; i >= 0; i -= 1) {
+    const e = priorEvents[i];
+    if (e.type === EVENT_TYPES.PURCHASE_COMPLETED) return 0;
+    if (e.type === EVENT_TYPES.COUPON_APPLIED) return e.metadata?.discountPercent ?? 0;
+  }
+  return 0;
+}
+
+/**
+ * Generates realistic metadata for a quick-fired event, using prior session
+ * context where it matters (cart events reference the last viewed product,
+ * purchases inherit an applied coupon's discount).
+ *
+ * @param {EventType} type
+ * @param {ShopperEvent[]} priorEvents
+ * @returns {EventMetadata|undefined}
+ */
+function generateMetadata(type, priorEvents) {
+  switch (type) {
+    case EVENT_TYPES.PRODUCT_VIEW: {
+      const p = randomItem(CATALOG);
+      return { ...productMetadata(p), timeOnPage: randomInt(RANDOM_DWELL_MIN_S, RANDOM_DWELL_MAX_S) };
+    }
+    case EVENT_TYPES.CATEGORY_VIEW:
+      return { category: randomItem(CATALOG_CATEGORIES) };
+    case EVENT_TYPES.FILTER_USED:
+      return { category: contextProduct(priorEvents).category };
+    case EVENT_TYPES.SEARCH:
+      // Half the quick-fired searches are broad ("sale"), half specific —
+      // so the button exercises both sides of the broad-search signal.
+      return { searchQuery: Math.random() < 0.5 ? randomItem(BROAD_SEARCH_QUERIES) : randomItem(SPECIFIC_SEARCH_QUERIES) };
+    case EVENT_TYPES.ADD_TO_CART:
+    case EVENT_TYPES.REMOVE_FROM_CART:
+    case EVENT_TYPES.WISHLIST_ADD:
+    case EVENT_TYPES.PRICE_CHECK:
+    case EVENT_TYPES.REVIEW_READ:
+      return productMetadata(contextProduct(priorEvents));
+    case EVENT_TYPES.COUPON_SEARCH:
+      return { searchQuery: randomItem(COUPON_SEARCH_QUERIES) };
+    case EVENT_TYPES.COUPON_APPLIED:
+      return { discountPercent: randomItem(COUPON_DISCOUNT_CHOICES) };
+    case EVENT_TYPES.CHECKOUT_STARTED:
+    case EVENT_TYPES.CHECKOUT_ABANDONED:
+      return { price: contextProduct(priorEvents).price };
+    case EVENT_TYPES.PURCHASE_COMPLETED: {
+      const p = contextProduct(priorEvents);
+      return { ...productMetadata(p), discountPercent: activeDiscountPercent(priorEvents) };
+    }
+    default:
+      return undefined; // PAGE_VIEW, RETURN_VISIT carry no metadata
+  }
+}
+
+/**
+ * Builds a complete quick-fire event stamped with the current time.
+ *
+ * @param {EventType} type
+ * @param {ShopperEvent[]} priorEvents
+ * @returns {ShopperEvent}
+ */
+function createEvent(type, priorEvents) {
+  return {
+    id: crypto.randomUUID(),
+    type,
+    timestamp: Date.now(),
+    metadata: generateMetadata(type, priorEvents),
+  };
+}
+
+/**
+ * One step of a scenario preset. `atSec` is the offset from the scenario's
+ * first event, so realistic gaps (a 60-second post-abandonment silence, a
+ * 75-second product study) survive replay at any speed.
+ *
+ * @typedef {Object} PresetStep
+ * @property {EventType} type
+ * @property {number} atSec
+ * @property {EventMetadata=} metadata
+ */
+
+/**
+ * A pre-built session representing a classic shopper archetype.
+ *
+ * @typedef {Object} ScenarioPreset
+ * @property {string} id
+ * @property {string} label
+ * @property {string} description
+ * @property {string} archetype  State id this scenario is engineered to land on
+ * @property {PresetStep[]} steps
+ */
+
+/** Shorthand for defining preset steps. @param {EventType} type @param {number} atSec @param {EventMetadata=} metadata @returns {PresetStep} */
+const step = (type, atSec, metadata) => ({ type, atSec, ...(metadata ? { metadata } : {}) });
+
+/** Metadata builder for preset product references. @param {string} skuId @param {number=} timeOnPage @returns {EventMetadata} */
+const sku = (skuId, timeOnPage) => {
+  const p = CATALOG.find((c) => c.id === skuId);
+  return { ...productMetadata(p), ...(timeOnPage !== undefined ? { timeOnPage } : {}) };
+};
+
+/** @type {ScenarioPreset[]} */
+const SCENARIO_PRESETS = [
+  {
+    id: "window-shopper",
+    label: "Window Shopper",
+    description: "Drifts across four categories, skims two products, never touches the cart.",
+    archetype: "BROWSER",
+    steps: [
+      step(EVENT_TYPES.PAGE_VIEW, 0),
+      step(EVENT_TYPES.CATEGORY_VIEW, 8, { category: "Footwear" }),
+      step(EVENT_TYPES.PAGE_VIEW, 15),
+      step(EVENT_TYPES.SEARCH, 22, { searchQuery: "sale" }),
+      step(EVENT_TYPES.CATEGORY_VIEW, 30, { category: "Electronics" }),
+      step(EVENT_TYPES.PRODUCT_VIEW, 38, sku("SKU-1005", 8)),
+      step(EVENT_TYPES.PAGE_VIEW, 47),
+      step(EVENT_TYPES.CATEGORY_VIEW, 55, { category: "Accessories" }),
+      step(EVENT_TYPES.SEARCH, 64, { searchQuery: "gifts" }),
+      step(EVENT_TYPES.PRODUCT_VIEW, 72, sku("SKU-1007", 6)),
+    ],
+  },
+  {
+    id: "methodical-comparer",
+    label: "Methodical Comparer",
+    description: "Three long looks at Footwear rivals, reviews, price checks, a wishlist save.",
+    archetype: "COMPARER",
+    steps: [
+      step(EVENT_TYPES.SEARCH, 0, { searchQuery: "trail running shoes womens 8" }),
+      step(EVENT_TYPES.CATEGORY_VIEW, 10, { category: "Footwear" }),
+      step(EVENT_TYPES.FILTER_USED, 18, { category: "Footwear" }),
+      step(EVENT_TYPES.PRODUCT_VIEW, 30, sku("SKU-1001", 75)),
+      step(EVENT_TYPES.REVIEW_READ, 95, sku("SKU-1001")),
+      step(EVENT_TYPES.PRODUCT_VIEW, 130, sku("SKU-1002", 88)),
+      step(EVENT_TYPES.PRICE_CHECK, 150, sku("SKU-1002")),
+      step(EVENT_TYPES.PRODUCT_VIEW, 170, sku("SKU-1001", 60)),
+      step(EVENT_TYPES.WISHLIST_ADD, 200, sku("SKU-1001")),
+      step(EVENT_TYPES.REVIEW_READ, 215, sku("SKU-1002")),
+      step(EVENT_TYPES.PRICE_CHECK, 230, sku("SKU-1001")),
+    ],
+  },
+  {
+    id: "discount-hunter",
+    label: "Discount Hunter",
+    description: "Hunts codes before looking, applies one, drops the cart when the math disappoints.",
+    archetype: "DISCOUNT_SEEKER",
+    steps: [
+      step(EVENT_TYPES.SEARCH, 0, { searchQuery: "promo code" }),
+      step(EVENT_TYPES.COUPON_SEARCH, 10, { searchQuery: "promo code" }),
+      step(EVENT_TYPES.PRODUCT_VIEW, 20, sku("SKU-1004", 25)),
+      step(EVENT_TYPES.PRICE_CHECK, 45, sku("SKU-1004")),
+      step(EVENT_TYPES.ADD_TO_CART, 55, sku("SKU-1004")),
+      step(EVENT_TYPES.COUPON_SEARCH, 70, { searchQuery: "discount code" }),
+      step(EVENT_TYPES.COUPON_APPLIED, 85, { discountPercent: 10 }),
+      step(EVENT_TYPES.PRICE_CHECK, 95, sku("SKU-1004")),
+      step(EVENT_TYPES.REMOVE_FROM_CART, 105, sku("SKU-1004")),
+      step(EVENT_TYPES.RETURN_VISIT, 160),
+      step(EVENT_TYPES.COUPON_SEARCH, 170, { searchQuery: "coupon 2026" }),
+    ],
+  },
+  {
+    id: "abandoned-checkout",
+    label: "Abandoned Checkout",
+    description: "Carts a smart watch, starts checkout, walks away, returns but never re-commits.",
+    archetype: "CART_ABANDONER",
+    steps: [
+      step(EVENT_TYPES.PAGE_VIEW, 0),
+      step(EVENT_TYPES.PRODUCT_VIEW, 10, sku("SKU-1006", 40)),
+      step(EVENT_TYPES.PRODUCT_VIEW, 60, sku("SKU-1005", 35)),
+      step(EVENT_TYPES.ADD_TO_CART, 95, sku("SKU-1006")),
+      step(EVENT_TYPES.PAGE_VIEW, 105),
+      step(EVENT_TYPES.CHECKOUT_STARTED, 115, { price: 299 }),
+      step(EVENT_TYPES.CHECKOUT_ABANDONED, 150, { price: 299 }),
+      step(EVENT_TYPES.RETURN_VISIT, 210), // 60s of silence after walking away
+      step(EVENT_TYPES.PRODUCT_VIEW, 220, sku("SKU-1006", 20)),
+      step(EVENT_TYPES.PAGE_VIEW, 240),
+    ],
+  },
+  {
+    id: "loyal-repeat-buyer",
+    label: "Loyal Repeat Buyer",
+    description: "Returns, buys at full price, reads reviews after, then buys again.",
+    archetype: "LOYAL_CUSTOMER",
+    steps: [
+      step(EVENT_TYPES.RETURN_VISIT, 0),
+      step(EVENT_TYPES.PRODUCT_VIEW, 8, sku("SKU-1008", 30)),
+      step(EVENT_TYPES.ADD_TO_CART, 25, sku("SKU-1008")),
+      step(EVENT_TYPES.CHECKOUT_STARTED, 35, { price: 45 }),
+      step(EVENT_TYPES.PURCHASE_COMPLETED, 50, { ...sku("SKU-1008"), discountPercent: 0 }),
+      step(EVENT_TYPES.RETURN_VISIT, 110),
+      step(EVENT_TYPES.REVIEW_READ, 120, sku("SKU-1008")),
+      step(EVENT_TYPES.PRODUCT_VIEW, 135, sku("SKU-1007", 25)),
+      step(EVENT_TYPES.ADD_TO_CART, 150, sku("SKU-1007")),
+      step(EVENT_TYPES.CHECKOUT_STARTED, 158, { price: 59 }),
+      step(EVENT_TYPES.PURCHASE_COMPLETED, 170, { ...sku("SKU-1007"), discountPercent: 0 }),
+    ],
+  },
+];
+
+/**
+ * Materialises a preset into concrete events. Timestamps are rebased so the
+ * scenario's last step lands at "now" — earlier steps sit in the recent past,
+ * preserving the scenario's realistic time gaps for the engine's idle and
+ * quick-purchase detection.
+ *
+ * @param {ScenarioPreset} preset
+ * @returns {ShopperEvent[]}
+ */
+function materializePreset(preset) {
+  const lastAtSec = preset.steps[preset.steps.length - 1].atSec;
+  const base = Date.now() - lastAtSec * 1000;
+  return preset.steps.map((s) => ({
+    id: crypto.randomUUID(),
+    type: s.type,
+    timestamp: base + s.atSec * 1000,
+    ...(s.metadata ? { metadata: s.metadata } : {}),
+  }));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 7. UI — placeholder shell (simulator, output and evidence panels land in
 //    the next iterations of this file).
 // ═══════════════════════════════════════════════════════════════════════════
