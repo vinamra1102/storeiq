@@ -27,6 +27,45 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity,
+  BadgePercent,
+  Braces,
+  CheckCircle2,
+  ChevronRight,
+  Circle,
+  Compass,
+  CreditCard,
+  Crown,
+  Eye,
+  Gauge,
+  Ghost,
+  Heart,
+  LayoutGrid,
+  ListChecks,
+  Package,
+  PackageCheck,
+  Percent,
+  Play,
+  Radar,
+  RefreshCw,
+  RotateCcw,
+  Scale,
+  Search,
+  ShoppingCart,
+  SlidersHorizontal,
+  Sparkles,
+  Star,
+  Tag,
+  Ticket,
+  Timer,
+  Trash2,
+  TrendingDown,
+  TrendingUp,
+  Undo2,
+  XCircle,
+  Zap,
+} from "lucide-react";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. EVENT SCHEMA
@@ -1303,18 +1342,1025 @@ function materializePreset(preset) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 7. UI — placeholder shell (simulator, output and evidence panels land in
-//    the next iterations of this file).
+// 7. UI — simulator panel · classification output · evidence & features ·
+//    event stream feed. Everything below is presentation; nothing below
+//    changes what the engine computes.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ── UI constants ───────────────────────────────────────────────────────────
+
+/** Default replay speed and the slider's bounds (ms per event). */
+const REPLAY_SPEED_DEFAULT_MS = 600;
+const REPLAY_SPEED_MIN_MS = 100;
+const REPLAY_SPEED_MAX_MS = 2000;
+const REPLAY_SPEED_STEP_MS = 100;
+
+/** Clock-tick interval driving relative timestamps and the session timer. */
+const CLOCK_TICK_MS = 1000;
+
+/** Distinct icon per event type. @type {Record<EventType, React.ComponentType>} */
+const EVENT_ICONS = {
+  [EVENT_TYPES.PAGE_VIEW]: Eye,
+  [EVENT_TYPES.PRODUCT_VIEW]: Package,
+  [EVENT_TYPES.CATEGORY_VIEW]: LayoutGrid,
+  [EVENT_TYPES.SEARCH]: Search,
+  [EVENT_TYPES.ADD_TO_CART]: ShoppingCart,
+  [EVENT_TYPES.REMOVE_FROM_CART]: Trash2,
+  [EVENT_TYPES.WISHLIST_ADD]: Heart,
+  [EVENT_TYPES.COUPON_SEARCH]: Ticket,
+  [EVENT_TYPES.COUPON_APPLIED]: BadgePercent,
+  [EVENT_TYPES.CHECKOUT_STARTED]: CreditCard,
+  [EVENT_TYPES.CHECKOUT_ABANDONED]: XCircle,
+  [EVENT_TYPES.PURCHASE_COMPLETED]: PackageCheck,
+  [EVENT_TYPES.RETURN_VISIT]: RotateCcw,
+  [EVENT_TYPES.REVIEW_READ]: Star,
+  [EVENT_TYPES.PRICE_CHECK]: Tag,
+  [EVENT_TYPES.FILTER_USED]: SlidersHorizontal,
+};
+
+/** Distinct icon per shopper state. @type {Record<string, React.ComponentType>} */
+const STATE_ICONS = {
+  BROWSER: Compass,
+  COMPARER: Scale,
+  DISCOUNT_SEEKER: Percent,
+  CART_ABANDONER: Ghost,
+  LOYAL_CUSTOMER: Crown,
+};
+
+/** Human labels per event type (feed + buttons). @type {Record<EventType, string>} */
+const EVENT_LABELS = {
+  [EVENT_TYPES.PAGE_VIEW]: "Page View",
+  [EVENT_TYPES.PRODUCT_VIEW]: "Product View",
+  [EVENT_TYPES.CATEGORY_VIEW]: "Category View",
+  [EVENT_TYPES.SEARCH]: "Search",
+  [EVENT_TYPES.ADD_TO_CART]: "Add to Cart",
+  [EVENT_TYPES.REMOVE_FROM_CART]: "Remove from Cart",
+  [EVENT_TYPES.WISHLIST_ADD]: "Wishlist Add",
+  [EVENT_TYPES.COUPON_SEARCH]: "Coupon Search",
+  [EVENT_TYPES.COUPON_APPLIED]: "Coupon Applied",
+  [EVENT_TYPES.CHECKOUT_STARTED]: "Checkout Started",
+  [EVENT_TYPES.CHECKOUT_ABANDONED]: "Checkout Abandoned",
+  [EVENT_TYPES.PURCHASE_COMPLETED]: "Purchase Completed",
+  [EVENT_TYPES.RETURN_VISIT]: "Return Visit",
+  [EVENT_TYPES.REVIEW_READ]: "Review Read",
+  [EVENT_TYPES.PRICE_CHECK]: "Price Check",
+  [EVENT_TYPES.FILTER_USED]: "Filter Used",
+};
+
 /**
- * Root component. Placeholder until the simulator and dashboard UI land.
+ * Simulator button groups; also drives feed color coding. Group accents are
+ * always paired with an icon + text label, never color alone.
+ *
+ * @typedef {Object} EventGroup
+ * @property {string} id
+ * @property {string} label
+ * @property {string} dot     Tailwind class for the group's colored dot
+ * @property {string} chip    Tailwind classes for feed icon chips
+ * @property {EventType[]} types
+ */
+
+/** @type {EventGroup[]} */
+const EVENT_GROUPS = [
+  {
+    id: "browsing",
+    label: "Browsing",
+    dot: "bg-sky-400",
+    chip: "bg-sky-400/10 text-sky-400 border-sky-400/20",
+    types: [
+      EVENT_TYPES.PAGE_VIEW,
+      EVENT_TYPES.CATEGORY_VIEW,
+      EVENT_TYPES.PRODUCT_VIEW,
+      EVENT_TYPES.SEARCH,
+      EVENT_TYPES.FILTER_USED,
+      EVENT_TYPES.REVIEW_READ,
+      EVENT_TYPES.PRICE_CHECK,
+    ],
+  },
+  {
+    id: "cart",
+    label: "Cart Actions",
+    dot: "bg-rose-400",
+    chip: "bg-rose-400/10 text-rose-400 border-rose-400/20",
+    types: [EVENT_TYPES.ADD_TO_CART, EVENT_TYPES.REMOVE_FROM_CART, EVENT_TYPES.WISHLIST_ADD],
+  },
+  {
+    id: "purchase",
+    label: "Purchase",
+    dot: "bg-emerald-400",
+    chip: "bg-emerald-400/10 text-emerald-400 border-emerald-400/20",
+    types: [EVENT_TYPES.CHECKOUT_STARTED, EVENT_TYPES.CHECKOUT_ABANDONED, EVENT_TYPES.PURCHASE_COMPLETED],
+  },
+  {
+    id: "loyalty",
+    label: "Loyalty",
+    dot: "bg-cyan-400",
+    chip: "bg-cyan-400/10 text-cyan-400 border-cyan-400/20",
+    types: [EVENT_TYPES.RETURN_VISIT],
+  },
+  {
+    id: "discount",
+    label: "Discount",
+    dot: "bg-amber-400",
+    chip: "bg-amber-400/10 text-amber-400 border-amber-400/20",
+    types: [EVENT_TYPES.COUPON_SEARCH, EVENT_TYPES.COUPON_APPLIED],
+  },
+];
+
+/** Reverse lookup: event type → its group. @type {Record<EventType, EventGroup>} */
+const GROUP_BY_EVENT_TYPE = Object.fromEntries(EVENT_GROUPS.flatMap((g) => g.types.map((t) => [t, g])));
+
+/** Custom keyframes Tailwind utilities can't express. */
+const KEYFRAME_STYLES = `
+@keyframes siq-slide-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes siq-badge-pulse {
+  0%   { box-shadow: 0 0 0 0 var(--siq-pulse-color, rgba(59, 130, 246, 0.45)); }
+  100% { box-shadow: 0 0 0 16px rgba(0, 0, 0, 0); }
+}
+.siq-slide-in { animation: siq-slide-in 0.3s ease-out both; }
+.siq-badge-pulse { animation: siq-badge-pulse 0.9s ease-out 2; }
+`;
+
+// ── UI formatting helpers ──────────────────────────────────────────────────
+
+/**
+ * "just now" / "12s ago" / "3m ago" style relative time.
+ * @param {number} timestamp @param {number} now @returns {string}
+ */
+function formatRelativeTime(timestamp, now) {
+  const deltaS = Math.max(0, Math.floor((now - timestamp) / 1000));
+  if (deltaS < 3) return "just now";
+  if (deltaS < 60) return `${deltaS}s ago`;
+  const minutes = Math.floor(deltaS / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m ago`;
+}
+
+/** m:ss (or h:mm:ss) session duration. @param {number} ms @returns {string} */
+function formatDuration(ms) {
+  const totalS = Math.max(0, Math.floor(ms / 1000));
+  const s = totalS % 60;
+  const m = Math.floor(totalS / 60) % 60;
+  const h = Math.floor(totalS / 3600);
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+    : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/**
+ * Compact one-line metadata summary for the event feed.
+ * @param {ShopperEvent} event @returns {string}
+ */
+function summarizeMetadata(event) {
+  const m = event.metadata;
+  if (!m) return "";
+  const parts = [];
+  if (m.productName) parts.push(m.productName);
+  else if (m.category) parts.push(m.category);
+  if (m.searchQuery) parts.push(`“${m.searchQuery}”`);
+  if (typeof m.price === "number") parts.push(`$${m.price}`);
+  if (typeof m.discountPercent === "number") parts.push(m.discountPercent > 0 ? `−${m.discountPercent}%` : "full price");
+  if (typeof m.timeOnPage === "number") parts.push(`${m.timeOnPage}s on page`);
+  return parts.join(" · ");
+}
+
+/**
+ * Declarative layout of the Features tab: every FeatureVector field, grouped
+ * and formatted. Keys must match FeatureVector exactly.
+ * @type {{label: string, items: {key: string, label: string, format: (v: *) => string}[]}[]}
+ */
+const FEATURE_GROUPS = [
+  {
+    label: "Volume",
+    items: [
+      { key: "totalEvents", label: "Total events", format: String },
+      { key: "pageViews", label: "Page views", format: String },
+      { key: "productViews", label: "Product views", format: String },
+      { key: "categoryViews", label: "Category views", format: String },
+      { key: "searches", label: "Searches", format: String },
+      { key: "addToCarts", label: "Add-to-carts", format: String },
+      { key: "removesFromCart", label: "Cart removals", format: String },
+      { key: "wishlistAdds", label: "Wishlist adds", format: String },
+      { key: "couponSearches", label: "Coupon searches", format: String },
+      { key: "couponsApplied", label: "Coupons applied", format: String },
+      { key: "checkoutsStarted", label: "Checkouts started", format: String },
+      { key: "checkoutsAbandoned", label: "Checkouts abandoned", format: String },
+      { key: "purchases", label: "Purchases", format: String },
+      { key: "returnVisits", label: "Return visits", format: String },
+      { key: "reviewsRead", label: "Reviews read", format: String },
+      { key: "priceChecks", label: "Price checks", format: String },
+      { key: "filtersUsed", label: "Filters used", format: String },
+    ],
+  },
+  {
+    label: "Ratios",
+    items: [
+      { key: "addToCartRatio", label: "Add-to-cart ratio", format: (v) => v.toFixed(2) },
+      { key: "cartChurnRatio", label: "Cart churn ratio", format: (v) => v.toFixed(2) },
+      { key: "couponEventRatio", label: "Coupon event share", format: pct },
+      { key: "checkoutAbandonRate", label: "Checkout abandon rate", format: pct },
+      { key: "couponsPerPurchase", label: "Coupon searches / purchase", format: (v) => v.toFixed(2) },
+      { key: "browsingShare", label: "Browsing share", format: pct },
+      { key: "broadSearchRatio", label: "Broad search ratio", format: pct },
+    ],
+  },
+  {
+    label: "Timing",
+    items: [
+      { key: "avgTimeOnProductPageS", label: "Avg product-page dwell", format: (v) => `${Math.round(v)}s` },
+      { key: "sessionDurationMs", label: "Session duration", format: formatDuration },
+      { key: "maxIdleAfterCartMs", label: "Max idle after cart", format: (v) => `${Math.round(v / 1000)}s` },
+      {
+        key: "msFromFirstProductViewToPurchase",
+        label: "First view → purchase",
+        format: (v) => (v === null ? "—" : `${Math.round(v / 1000)}s`),
+      },
+    ],
+  },
+  {
+    label: "Sequence Patterns",
+    items: [
+      { key: "distinctCategoriesViewed", label: "Distinct categories", format: String },
+      { key: "maxSameCategoryProductViews", label: "Max views, one category", format: String },
+      { key: "removesAfterPriceSignal", label: "Removals after price check", format: String },
+      { key: "returnVisitsWithoutNewCart", label: "Returns w/o new cart add", format: String },
+      { key: "postPurchaseReviewReads", label: "Post-purchase review reads", format: String },
+      { key: "purchasesAtFullPrice", label: "Full-price purchases", format: String },
+      { key: "wishlistWithoutCart", label: "Wishlist w/o cart", format: (v) => (v ? "yes" : "no") },
+    ],
+  },
+];
+
+// ── Presentational components ──────────────────────────────────────────────
+
+/**
+ * Card shell used by every panel.
+ * @param {{title: string, icon: React.ComponentType, children: React.ReactNode, className?: string, aside?: React.ReactNode}} props
+ * @returns {JSX.Element}
+ */
+function Panel({ title, icon: Icon, children, className = "", aside }) {
+  return (
+    <section className={`rounded-xl border border-slate-800 bg-slate-900/70 ${className}`}>
+      <header className="flex items-center justify-between gap-2 border-b border-slate-800 px-4 py-2.5">
+        <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+          <Icon size={14} aria-hidden="true" />
+          {title}
+        </h2>
+        {aside}
+      </header>
+      <div className="p-4">{children}</div>
+    </section>
+  );
+}
+
+/**
+ * One quick-fire button in the simulator.
+ * @param {{type: EventType, onFire: (type: EventType) => void, disabled: boolean}} props
+ * @returns {JSX.Element}
+ */
+function EventButton({ type, onFire, disabled }) {
+  const Icon = EVENT_ICONS[type];
+  return (
+    <button
+      type="button"
+      onClick={() => onFire(type)}
+      disabled={disabled}
+      title={EVENT_LABELS[type]}
+      className="flex items-center gap-1.5 rounded-md border border-slate-800 bg-slate-950/60 px-2 py-1.5 text-left text-xs text-slate-300 transition-colors duration-150 hover:border-slate-600 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+      aria-label={`Fire ${EVENT_LABELS[type]} event`}
+    >
+      <Icon size={13} className="shrink-0 text-slate-500" aria-hidden="true" />
+      <span className="truncate">{EVENT_LABELS[type]}</span>
+    </button>
+  );
+}
+
+/**
+ * Left column: quick-fire buttons, scenario presets, speed control, session
+ * controls and live counters.
+ *
+ * @param {{
+ *   onFire: (type: EventType) => void,
+ *   onLoadPreset: (preset: ScenarioPreset) => void,
+ *   onReset: () => void,
+ *   onUndo: () => void,
+ *   onSpeedChange: (ms: number) => void,
+ *   speedMs: number,
+ *   eventCount: number,
+ *   sessionDurationMs: number,
+ *   replaying: boolean,
+ *   replayRemaining: number,
+ *   activePresetId: ?string,
+ *   canUndo: boolean,
+ *   canReset: boolean,
+ * }} props
+ * @returns {JSX.Element}
+ */
+function SimulatorPanel({
+  onFire,
+  onLoadPreset,
+  onReset,
+  onUndo,
+  onSpeedChange,
+  speedMs,
+  eventCount,
+  sessionDurationMs,
+  replaying,
+  replayRemaining,
+  activePresetId,
+  canUndo,
+  canReset,
+}) {
+  return (
+    <Panel title="Session Simulator" icon={Zap} className="flex flex-col">
+      {/* Live counters */}
+      <div className="mb-4 grid grid-cols-2 gap-2">
+        <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-500">
+            <Activity size={11} aria-hidden="true" /> Events
+          </div>
+          <div className="mt-0.5 font-mono text-lg text-slate-100">{eventCount}</div>
+        </div>
+        <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-500">
+            <Timer size={11} aria-hidden="true" /> Session
+          </div>
+          <div className="mt-0.5 font-mono text-lg text-slate-100">{formatDuration(sessionDurationMs)}</div>
+        </div>
+      </div>
+
+      {/* Quick-fire groups */}
+      <div className="flex flex-col gap-3">
+        {EVENT_GROUPS.map((group) => (
+          <div key={group.id}>
+            <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              <span className={`h-1.5 w-1.5 rounded-full ${group.dot}`} aria-hidden="true" />
+              {group.label}
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              {group.types.map((type) => (
+                <EventButton key={type} type={type} onFire={onFire} disabled={replaying} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Scenario presets */}
+      <div className="mt-5">
+        <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+          <Play size={11} aria-hidden="true" /> Scenario Presets
+        </div>
+        <div className="flex flex-col gap-1.5">
+          {SCENARIO_PRESETS.map((preset) => {
+            const state = SHOPPER_STATES[preset.archetype];
+            const isActive = activePresetId === preset.id;
+            const done = preset.steps.length - (isActive ? replayRemaining : 0);
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => onLoadPreset(preset)}
+                disabled={replaying && !isActive}
+                className={`rounded-lg border px-3 py-2 text-left transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isActive ? "border-slate-600 bg-slate-800/80" : "border-slate-800 bg-slate-950/60 hover:border-slate-600 hover:bg-slate-800/60"
+                }`}
+                aria-label={`Load ${preset.label} scenario`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-slate-200">
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: state.color }} aria-hidden="true" />
+                    {preset.label}
+                  </span>
+                  <span className="font-mono text-[10px] text-slate-500">
+                    {isActive && replaying ? `${done}/${preset.steps.length}` : `${preset.steps.length} ev`}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{preset.description}</p>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Replay speed */}
+      <div className="mt-5">
+        <div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+          <span className="flex items-center gap-1.5">
+            <Gauge size={11} aria-hidden="true" /> Replay Speed
+          </span>
+          <span className="font-mono normal-case text-slate-400">{speedMs} ms/event</span>
+        </div>
+        <input
+          type="range"
+          min={REPLAY_SPEED_MIN_MS}
+          max={REPLAY_SPEED_MAX_MS}
+          step={REPLAY_SPEED_STEP_MS}
+          value={speedMs}
+          onChange={(e) => onSpeedChange(Number(e.target.value))}
+          className="w-full accent-blue-500"
+          aria-label="Replay speed in milliseconds per event"
+        />
+      </div>
+
+      {/* Session controls */}
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={onUndo}
+          disabled={!canUndo}
+          className="flex items-center justify-center gap-1.5 rounded-md border border-slate-700 bg-slate-800/60 px-3 py-2 text-xs font-medium text-slate-300 transition-colors duration-150 hover:bg-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Undo2 size={13} aria-hidden="true" /> Undo Last
+        </button>
+        <button
+          type="button"
+          onClick={onReset}
+          disabled={!canReset}
+          className="flex items-center justify-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-400 transition-colors duration-150 hover:bg-red-500/20 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <RefreshCw size={13} aria-hidden="true" /> Reset Session
+        </button>
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * Large primary-state badge; pulses (via keyframe) when the state flips.
+ * @param {{primary: ?string, secondary: ?string, confidence: number, scores: Record<string, number>, pulseKey: number}} props
+ * @returns {JSX.Element}
+ */
+function StateBadge({ primary, secondary, confidence, scores, pulseKey }) {
+  if (!primary) {
+    return (
+      <div className="flex items-center gap-4 rounded-xl border border-dashed border-slate-700 bg-slate-900/40 p-5">
+        <div className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-slate-800 text-slate-500">
+          <Radar size={28} aria-hidden="true" />
+        </div>
+        <div>
+          <div className="text-lg font-semibold text-slate-300">Awaiting signals</div>
+          <p className="text-sm text-slate-500">Fire events or load a scenario — classification begins with the first event.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const state = SHOPPER_STATES[primary];
+  const StateIcon = STATE_ICONS[primary];
+  const secondaryState = secondary ? SHOPPER_STATES[secondary] : null;
+  const SecondaryIcon = secondary ? STATE_ICONS[secondary] : null;
+
+  return (
+    <div
+      key={pulseKey} /* re-mount on state change re-triggers the pulse keyframe */
+      className="siq-badge-pulse rounded-xl border p-5"
+      style={{
+        "--siq-pulse-color": `${state.color}73`, // 45% alpha pulse ring in the state's accent
+        borderColor: `${state.color}59`,
+        background: `linear-gradient(135deg, ${state.color}1f, rgba(15, 23, 42, 0.4))`,
+      }}
+    >
+      <div className="flex items-start gap-4">
+        <div
+          className="grid h-14 w-14 shrink-0 place-items-center rounded-xl"
+          style={{ backgroundColor: `${state.color}26`, color: state.color }}
+        >
+          <StateIcon size={30} aria-hidden="true" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+            <h3 className="text-2xl font-bold tracking-tight text-white">{state.label}</h3>
+            <span className="font-mono text-2xl font-semibold" style={{ color: state.color }}>
+              {Math.round(confidence)}%
+            </span>
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-slate-400">{state.definition}</p>
+          {secondaryState && (
+            <div className="mt-2.5 inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/70 px-2.5 py-1 text-[11px] text-slate-300">
+              <SecondaryIcon size={12} style={{ color: secondaryState.color }} aria-hidden="true" />
+              Secondary: <span className="font-medium text-slate-200">{secondaryState.label}</span>
+              <span className="font-mono text-slate-400">{Math.round(scores[secondary])}%</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Five always-visible confidence bars in fixed state order.
+ * @param {{scores: Record<string, number>, primary: ?string}} props
+ * @returns {JSX.Element}
+ */
+function ConfidenceBars({ scores, primary }) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      {STATE_ORDER.map((id) => {
+        const state = SHOPPER_STATES[id];
+        const Icon = STATE_ICONS[id];
+        const value = scores[id] ?? 0;
+        const isPrimary = id === primary;
+        return (
+          <div key={id}>
+            <div className="mb-1 flex items-center justify-between text-xs">
+              <span className={`flex items-center gap-1.5 ${isPrimary ? "font-semibold text-slate-100" : "text-slate-400"}`}>
+                <Icon size={13} style={{ color: state.color }} aria-hidden="true" />
+                {state.label}
+              </span>
+              <span className={`font-mono ${isPrimary ? "text-slate-100" : "text-slate-500"}`}>{Math.round(value)}%</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-slate-800" role="presentation">
+              <div
+                className={`h-full rounded-full ${state.classes.bar} transition-[width] duration-500 ease-out`}
+                style={{ width: `${value}%` }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The recommended-action card for the primary state.
+ * @param {{nudge: ?Nudge, primary: ?string, confidence: number}} props
+ * @returns {JSX.Element|null}
+ */
+function NudgeCard({ nudge, primary, confidence }) {
+  if (!nudge || !primary) {
+    return (
+      <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 p-4 text-sm text-slate-500">
+        <span className="flex items-center gap-2">
+          <Sparkles size={15} aria-hidden="true" /> No nudge yet — the engine recommends actions once it has a classification.
+        </span>
+      </div>
+    );
+  }
+  const state = SHOPPER_STATES[primary];
+  return (
+    <div className="relative overflow-hidden rounded-xl border border-slate-700 bg-slate-900">
+      <div className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: state.color }} aria-hidden="true" />
+      <div className="p-4 pl-5">
+        <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+          <Sparkles size={12} style={{ color: state.color }} aria-hidden="true" />
+          Recommended Nudge
+          <span className="ml-auto rounded-full border border-slate-700 px-2 py-0.5 font-mono normal-case text-slate-400">
+            {state.label} @ {Math.round(confidence)}%
+          </span>
+        </div>
+        <h4 className="mt-2 text-base font-semibold text-white">{nudge.headline}</h4>
+        <p className="mt-1 text-xs leading-relaxed text-slate-400">{nudge.directive}</p>
+        <ul className="mt-3 flex flex-col gap-1.5">
+          {nudge.actions.map((action) => (
+            <li key={action} className="flex items-center gap-1.5 text-xs text-slate-300">
+              <ChevronRight size={12} style={{ color: state.color }} aria-hidden="true" />
+              {action}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+/** Sparkline geometry: viewBox units and padding. */
+const SPARK_W = 240;
+const SPARK_H = 64;
+const SPARK_PAD = 4;
+
+/**
+ * Confidence-over-time sparkline: the current primary state's confidence
+ * after each event, as a raw SVG polyline. Hover shows a crosshair + readout.
+ *
+ * @param {{history: Record<string, number>[], primary: ?string}} props
+ * @returns {JSX.Element}
+ */
+function Sparkline({ history, primary }) {
+  const [hoverIndex, setHoverIndex] = useState(/** @type {?number} */ (null));
+
+  const values = useMemo(
+    () => (primary ? history.map((scores) => scores[primary] ?? 0) : []),
+    [history, primary]
+  );
+
+  const handleMouseMove = useCallback(
+    (e) => {
+      if (values.length < 2) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const ratio = (e.clientX - rect.left) / rect.width;
+      setHoverIndex(Math.min(values.length - 1, Math.max(0, Math.round(ratio * (values.length - 1)))));
+    },
+    [values.length]
+  );
+  const handleMouseLeave = useCallback(() => setHoverIndex(null), []);
+
+  if (!primary || values.length < 2) {
+    return (
+      <div className="grid h-16 place-items-center rounded-lg border border-dashed border-slate-800 text-xs text-slate-600">
+        Confidence trend appears after two events
+      </div>
+    );
+  }
+
+  const state = SHOPPER_STATES[primary];
+  const toX = (i) => SPARK_PAD + (i / (values.length - 1)) * (SPARK_W - 2 * SPARK_PAD);
+  const toY = (v) => SPARK_H - SPARK_PAD - (v / CONFIDENCE_MAX) * (SPARK_H - 2 * SPARK_PAD);
+  const points = values.map((v, i) => `${toX(i)},${toY(v)}`).join(" ");
+
+  return (
+    <div className="relative" onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
+      <svg viewBox={`0 0 ${SPARK_W} ${SPARK_H}`} preserveAspectRatio="none" className="h-16 w-full" role="img" aria-label={`${state.label} confidence over ${values.length} events, currently ${Math.round(values[values.length - 1])}%`}>
+        {/* Reference lines at 0 / 50 / 100 */}
+        {[0, 50, 100].map((level) => (
+          <line
+            key={level}
+            x1={SPARK_PAD}
+            x2={SPARK_W - SPARK_PAD}
+            y1={toY(level)}
+            y2={toY(level)}
+            stroke="#1e293b"
+            strokeWidth="1"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+        <polyline
+          points={points}
+          fill="none"
+          stroke={state.color}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+        {hoverIndex !== null && (
+          <line
+            x1={toX(hoverIndex)}
+            x2={toX(hoverIndex)}
+            y1={SPARK_PAD}
+            y2={SPARK_H - SPARK_PAD}
+            stroke="#475569"
+            strokeWidth="1"
+            strokeDasharray="3 3"
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+      </svg>
+      {hoverIndex !== null && (
+        <div className="pointer-events-none absolute -top-1 right-0 rounded border border-slate-700 bg-slate-900 px-2 py-0.5 font-mono text-[10px] text-slate-300">
+          event {hoverIndex + 1} · {Math.round(values[hoverIndex])}%
+        </div>
+      )}
+      <div className="mt-1 flex justify-between font-mono text-[10px] text-slate-600">
+        <span>event 1</span>
+        <span>
+          {state.label} confidence · event {values.length}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Evidence tab: every rule the engine evaluated for the primary state —
+ * triggered or not — with weight, contribution and plain-English explanation.
+ * @param {{evidence: EvidenceItem[], primary: ?string}} props
+ * @returns {JSX.Element}
+ */
+function EvidencePanel({ evidence, primary }) {
+  if (!primary) {
+    return <p className="text-sm text-slate-500">Evidence appears once the engine has a classification to defend.</p>;
+  }
+  const state = SHOPPER_STATES[primary];
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="mb-2 text-xs text-slate-500">
+        Why the engine chose <span className="font-medium text-slate-300">{state.label}</span> — every rule it evaluated:
+      </p>
+      {evidence.map((item) => {
+        const isDecay = item.kind === "decay";
+        const StatusIcon = isDecay ? TrendingDown : item.triggered ? CheckCircle2 : Circle;
+        const statusColor = isDecay
+          ? item.triggered
+            ? "text-red-400"
+            : "text-slate-600"
+          : item.triggered
+            ? "text-emerald-400"
+            : "text-slate-600";
+        const contributionText =
+          item.contribution > 0 ? `+${item.contribution.toFixed(1)}` : item.contribution.toFixed(1);
+        return (
+          <div
+            key={item.rule}
+            className={`rounded-lg border px-3 py-2 ${item.triggered ? "border-slate-700 bg-slate-950/60" : "border-slate-800/60 bg-transparent opacity-70"}`}
+          >
+            <div className="flex items-center gap-2">
+              <StatusIcon size={13} className={`${statusColor} shrink-0`} aria-hidden="true" />
+              <span className="min-w-0 flex-1 text-xs font-medium leading-snug text-slate-200">{item.rule}</span>
+              <span className="rounded border border-slate-700 px-1 py-px font-mono text-[10px] text-slate-500">
+                {isDecay ? `×${item.weight}` : `w ${item.weight}`}
+              </span>
+              <span
+                className={`w-12 text-right font-mono text-xs ${
+                  item.contribution > 0 ? "text-emerald-400" : item.contribution < 0 ? "text-red-400" : "text-slate-600"
+                }`}
+              >
+                {contributionText}
+              </span>
+            </div>
+            <p className="mt-1 pl-5 text-[11px] leading-snug text-slate-400">{item.explanation}</p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Features tab: the full computed feature vector, grouped and readable.
+ * @param {{features: FeatureVector}} props
+ * @returns {JSX.Element}
+ */
+function FeaturesPanel({ features }) {
+  return (
+    <div className="flex flex-col gap-4">
+      {FEATURE_GROUPS.map((group) => (
+        <div key={group.label}>
+          <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{group.label}</h3>
+          <dl className="flex flex-col divide-y divide-slate-800/60">
+            {group.items.map(({ key, label, format }) => (
+              <div key={key} className="flex items-baseline justify-between gap-3 py-1">
+                <dt className="text-xs text-slate-400">{label}</dt>
+                <dd className="font-mono text-xs text-slate-200">{format(features[key])}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Bottom, full-width chronological event stream. Auto-scrolls to the newest
+ * entry; entries slide in on appear and are color-coded by event group.
+ * @param {{events: ShopperEvent[], now: number, feedRef: React.RefObject<HTMLDivElement>}} props
+ * @returns {JSX.Element}
+ */
+function EventFeed({ events, now, feedRef }) {
+  return (
+    <Panel
+      title="Event Stream"
+      icon={Activity}
+      aside={<span className="font-mono text-[11px] text-slate-500">{events.length} events</span>}
+    >
+      <div ref={feedRef} role="log" aria-label="Session event stream" className="max-h-56 overflow-y-auto pr-1">
+        {events.length === 0 ? (
+          <p className="py-6 text-center text-sm text-slate-600">No events yet — the session log fills in here.</p>
+        ) : (
+          <ul className="flex flex-col">
+            {events.map((event, index) => {
+              const group = GROUP_BY_EVENT_TYPE[event.type];
+              const Icon = EVENT_ICONS[event.type];
+              const summary = summarizeMetadata(event);
+              return (
+                <li
+                  key={event.id}
+                  className="siq-slide-in flex items-center gap-3 border-b border-slate-800/50 py-1.5 last:border-b-0"
+                >
+                  <span className="w-7 shrink-0 text-right font-mono text-[10px] text-slate-600">{index + 1}</span>
+                  <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-md border ${group.chip}`}>
+                    <Icon size={14} aria-hidden="true" />
+                  </span>
+                  <span className="w-36 shrink-0 truncate text-xs font-medium text-slate-200">{EVENT_LABELS[event.type]}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-slate-500">{summary}</span>
+                  <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(event.timestamp, now)}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+// ── Root component ─────────────────────────────────────────────────────────
+
+/**
+ * StoreIQ Personalization Rules Engine — root component wiring the simulator,
+ * the pure classification engine, and the evidence/feature inspectors.
  * @returns {JSX.Element}
  */
 export default function PersonalizationRulesEngine() {
+  /** @type {[ShopperEvent[], Function]} */
+  const [events, setEvents] = useState([]);
+  /** Events queued for interval-based scenario replay. @type {[ShopperEvent[], Function]} */
+  const [replayQueue, setReplayQueue] = useState([]);
+  const [activePresetId, setActivePresetId] = useState(/** @type {?string} */ (null));
+  const [speedMs, setSpeedMs] = useState(REPLAY_SPEED_DEFAULT_MS);
+  const [activeTab, setActiveTab] = useState(/** @type {"evidence"|"features"} */ ("evidence"));
+  const [now, setNow] = useState(() => Date.now());
+  const [pulseKey, setPulseKey] = useState(0);
+
+  /** Scroll container for the event feed (auto-scroll target). */
+  const feedRef = useRef(/** @type {?HTMLDivElement} */ (null));
+  /** Previous primary classification, for state-change pulse detection. */
+  const prevPrimaryRef = useRef(/** @type {?string} */ (null));
+
+  // ── Derived state (recomputed only when the event array changes) ──
+  const classification = useMemo(() => classifySession(events), [events]);
+
+  /**
+   * Per-event confidence history for the sparkline: the engine re-run over
+   * every prefix of the stream. O(n²) on tiny n — and inherently undo-safe,
+   * since history is derived, never accumulated.
+   */
+  const confidenceHistory = useMemo(
+    () => events.map((_, i) => classifySession(events.slice(0, i + 1)).scores),
+    [events]
+  );
+
+  const replaying = replayQueue.length > 0;
+  const sessionDurationMs = events.length > 0 ? Math.max(0, now - events[0].timestamp) : 0;
+
+  // ── Simulator actions ──
+  const fireEvent = useCallback((type) => {
+    setEvents((prev) => [...prev, createEvent(type, prev)]);
+  }, []);
+
+  const loadPreset = useCallback((preset) => {
+    setEvents([]);
+    setReplayQueue(materializePreset(preset));
+    setActivePresetId(preset.id);
+  }, []);
+
+  const resetSession = useCallback(() => {
+    setEvents([]);
+    setReplayQueue([]);
+    setActivePresetId(null);
+  }, []);
+
+  const undoLast = useCallback(() => {
+    setEvents((prev) => prev.slice(0, -1));
+  }, []);
+
+  const changeSpeed = useCallback((ms) => setSpeedMs(ms), []);
+
+  // ── Scenario replay: append the queue head every `speedMs`. The effect
+  //    re-arms after each pop (queue identity changes), so a speed change
+  //    mid-replay takes effect on the very next event. Cleared on unmount
+  //    and on reset (empty queue → no interval). ──
+  useEffect(() => {
+    if (replayQueue.length === 0) return undefined;
+    const intervalId = setInterval(() => {
+      setEvents((prev) => [...prev, replayQueue[0]]);
+      setReplayQueue((queue) => queue.slice(1));
+    }, speedMs);
+    return () => clearInterval(intervalId);
+  }, [replayQueue, speedMs]);
+
+  // ── 1-second clock tick: refreshes relative timestamps + session timer ──
+  useEffect(() => {
+    const tickId = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
+    return () => clearInterval(tickId);
+  }, []);
+
+  // ── Pulse the badge when the primary classification changes ──
+  useEffect(() => {
+    if (classification.primary !== prevPrimaryRef.current) {
+      prevPrimaryRef.current = classification.primary;
+      if (classification.primary) setPulseKey((k) => k + 1);
+    }
+  }, [classification.primary]);
+
+  // ── Auto-scroll the feed to the newest event ──
+  useEffect(() => {
+    const el = feedRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [events.length]);
+
+  const primaryState = classification.primary ? SHOPPER_STATES[classification.primary] : null;
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 flex items-center justify-center font-sans">
-      <p className="text-slate-400">StoreIQ rules engine core loaded — UI arriving in the next commit.</p>
+    <div className="min-h-screen bg-slate-950 font-sans text-slate-200">
+      <style>{KEYFRAME_STYLES}</style>
+      <div className="mx-auto flex max-w-7xl flex-col gap-4 p-4 lg:p-6">
+        {/* Header */}
+        <header className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="grid h-10 w-10 place-items-center rounded-xl border border-blue-500/30 bg-blue-500/10 text-blue-500">
+              <Radar size={22} aria-hidden="true" />
+            </div>
+            <div>
+              <h1 className="text-lg font-bold tracking-tight text-white">
+                StoreIQ <span className="font-normal text-slate-400">· Personalization Rules Engine</span>
+              </h1>
+              <p className="text-xs text-slate-500">
+                Live shopper-state classification — weighted rules, decay signals, full evidence trail. 100% client-side.
+              </p>
+            </div>
+          </div>
+          {primaryState && (
+            <div
+              className="flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs"
+              style={{ borderColor: `${primaryState.color}59`, backgroundColor: `${primaryState.color}14` }}
+            >
+              {React.createElement(STATE_ICONS[primaryState.id], { size: 13, style: { color: primaryState.color }, "aria-hidden": true })}
+              <span className="font-medium text-slate-200">{primaryState.label}</span>
+              <span className="font-mono text-slate-400">{Math.round(classification.confidence)}%</span>
+            </div>
+          )}
+        </header>
+
+        {/* Three-column workspace */}
+        <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-10">
+          {/* Left 30%: simulator */}
+          <div className="lg:col-span-3">
+            <SimulatorPanel
+              onFire={fireEvent}
+              onLoadPreset={loadPreset}
+              onReset={resetSession}
+              onUndo={undoLast}
+              onSpeedChange={changeSpeed}
+              speedMs={speedMs}
+              eventCount={events.length}
+              sessionDurationMs={sessionDurationMs}
+              replaying={replaying}
+              replayRemaining={replayQueue.length}
+              activePresetId={activePresetId}
+              canUndo={events.length > 0 && !replaying}
+              canReset={events.length > 0 || replaying}
+            />
+          </div>
+
+          {/* Center 40%: classification output */}
+          <div className="flex flex-col gap-4 lg:col-span-4">
+            <Panel title="Classification" icon={Radar}>
+              <StateBadge
+                primary={classification.primary}
+                secondary={classification.secondary}
+                confidence={classification.confidence}
+                scores={classification.scores}
+                pulseKey={pulseKey}
+              />
+              <div className="mt-4">
+                <ConfidenceBars scores={classification.scores} primary={classification.primary} />
+              </div>
+            </Panel>
+            <NudgeCard nudge={classification.nudge} primary={classification.primary} confidence={classification.confidence} />
+            <Panel title="Confidence Trend" icon={TrendingUp}>
+              <Sparkline history={confidenceHistory} primary={classification.primary} />
+            </Panel>
+          </div>
+
+          {/* Right 30%: evidence + feature vector */}
+          <div className="lg:col-span-3">
+            <Panel
+              title="Engine Internals"
+              icon={activeTab === "evidence" ? ListChecks : Braces}
+              aside={
+                <div className="flex gap-1" role="tablist" aria-label="Engine internals tabs">
+                  {[
+                    { id: "evidence", label: "Evidence", icon: ListChecks },
+                    { id: "features", label: "Features", icon: Braces },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === tab.id}
+                      onClick={() => setActiveTab(tab.id)}
+                      className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors duration-150 ${
+                        activeTab === tab.id ? "bg-slate-700 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                      }`}
+                    >
+                      <tab.icon size={11} aria-hidden="true" />
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              }
+            >
+              <div className="max-h-[42rem] overflow-y-auto pr-1">
+                {activeTab === "evidence" ? (
+                  <EvidencePanel evidence={classification.evidence} primary={classification.primary} />
+                ) : (
+                  <FeaturesPanel features={classification.featureVector} />
+                )}
+              </div>
+            </Panel>
+          </div>
+        </div>
+
+        {/* Bottom: full-width event stream */}
+        <EventFeed events={events} now={now} feedRef={feedRef} />
+      </div>
     </div>
   );
 }
